@@ -41,6 +41,10 @@ that controls a Home Assistant climate entity.
 
 ## Notes
 
+- The `xl9535` driver is pulled from the branch of [mreditor97/esphome PR #1](https://github.com/mreditor97/esphome/pull/1)
+  with `external_components`. That version caches the output registers, so each pin write is one I2C transfer. Change
+  the `ref` to a tag once a release includes it, or remove the block once it is in ESPHome.
+
 - The panel's SPI init lines, reset, power enable and touch reset are all on the XL9535 expander. The init
   sequence is bit-banged over I2C at boot, so the display takes a moment to come up.
 - GPIO46 drives the backlight as a dimmable light, exposed to Home Assistant as `Backlight`.

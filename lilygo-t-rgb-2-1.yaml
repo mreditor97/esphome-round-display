@@ -21,6 +21,17 @@ esphome:
   name: ${name}
   friendly_name: ${friendly_name}
 
+external_components:
+  # XL9535 driver that caches the output registers, so a pin write is one I2C transfer instead of a read and a
+  # write. This makes the bit-banged panel init much faster. It is not released yet and comes from the branch of
+  # mreditor97/esphome PR #1; switch the ref to a tag once one includes it.
+  - source:
+      type: git
+      url: https://github.com/mreditor97/esphome
+      ref: claude/sweet-euler-j7zx3b
+    components: [xl9535]
+    refresh: 1h
+
 esp32:
   variant: esp32s3
   board: esp32-s3-devkitc-1
