@@ -16,15 +16,17 @@ that controls a Home Assistant climate entity.
 
 ## Usage
 
-1. Copy `secrets.yaml.example` to `secrets.yaml` and fill in your values.
-2. Set `climate_entity` under `substitutions` to your thermostat's entity ID.
-3. Build and flash over USB:
+1. Use ESPHome 2026.11.0b1 or newer. Until 2026.11.0 is released, that means the ESPHome Device Builder beta in
+   Home Assistant. The updated `xl9535` driver below does not load on 2026.10.
+2. Copy `secrets.yaml.example` to `secrets.yaml` and fill in your values.
+3. Set `climate_entity` under `substitutions` to your thermostat's entity ID.
+4. Build and flash over USB:
 
    ```bash
    esphome run lilygo-t-rgb-2-1.yaml
    ```
 
-4. Add the device in Home Assistant. In the ESPHome integration, click **Configure** next to the device and turn on
+5. Add the device in Home Assistant. In the ESPHome integration, click **Configure** next to the device and turn on
    **Allow the device to perform Home Assistant actions**. Without it the screen shows the thermostat's state but
    cannot change it.
 

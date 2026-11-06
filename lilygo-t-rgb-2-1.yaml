@@ -20,6 +20,8 @@ substitutions:
 esphome:
   name: ${name}
   friendly_name: ${friendly_name}
+  # The xl9535 external component needs pin helpers added in 2026.11.0b1.
+  min_version: 2026.11.0b1
 
 external_components:
   # XL9535 driver that caches the output registers, so a pin write is one I2C transfer instead of a read and a
