@@ -14,6 +14,8 @@
 substitutions:
   name: t-rgb-round-display
   friendly_name: T-RGB Round Display
+  # Home Assistant climate entity shown and controlled on the screen.
+  climate_entity: climate.household_thermostat
 
 esphome:
   name: ${name}
@@ -35,6 +37,12 @@ logger:
 api:
   encryption:
     key: !secret api_encryption_key
+  on_client_connected:
+    - script.execute: show_status
+  on_client_disconnected:
+    - lvgl.label.update:
+        id: status_label
+        text: "Offline"
 
 ota:
   # Encrypted with the API encryption key.
@@ -47,6 +55,15 @@ wifi:
   ap: {}
 
 captive_portal:
+
+globals:
+  # Target temperature in half degrees, so that the arc (an integer widget) moves in 0.5 °C steps.
+  - id: target_half
+    type: int
+    initial_value: "40"
+  - id: screen_dimmed
+    type: bool
+    initial_value: "false"
 
 i2c:
   id: bus_a
@@ -108,33 +125,364 @@ touchscreen:
     reset_pin:
       xl9535: expander
       number: 1
+    # Wake the backlight after it was dimmed by the LVGL idle timer.
+    on_touch:
+      - if:
+          condition:
+            lambda: return id(screen_dimmed);
+          then:
+            - globals.set:
+                id: screen_dimmed
+                value: "false"
+            - light.turn_on:
+                id: backlight
+                brightness: 100%
+
+font:
+  # Large digits for the target temperature. The built-in LVGL fonts stop at 48 px.
+  - file:
+      type: gfonts
+      family: Roboto
+      weight: 300
+    id: font_target
+    size: 112
+    glyphs: "0123456789.-°"
+
+sensor:
+  - platform: homeassistant
+    id: ha_current_temperature
+    entity_id: ${climate_entity}
+    attribute: current_temperature
+    on_value:
+      - lvgl.label.update:
+          id: current_label
+          text:
+            format: "Now %.1f°C"
+            args: [x]
+  - platform: homeassistant
+    id: ha_target_temperature
+    entity_id: ${climate_entity}
+    attribute: temperature
+    on_value:
+      # Ignore updates while a local change is still waiting to be sent, so the arc does not jump back.
+      - if:
+          condition:
+            not:
+              script.is_running: send_target
+          then:
+            - globals.set:
+                id: target_half
+                value: !lambda return (int) roundf(x * 2.0f);
+            - lvgl.arc.update:
+                id: target_arc
+                value: !lambda return id(target_half);
+            - script.execute: show_target
+
+text_sensor:
+  - platform: homeassistant
+    id: ha_hvac_mode
+    entity_id: ${climate_entity}
+    on_value:
+      - script.execute: show_status
+  - platform: homeassistant
+    id: ha_hvac_action
+    entity_id: ${climate_entity}
+    attribute: hvac_action
+    on_value:
+      - script.execute: show_status
+  - platform: homeassistant
+    id: ha_preset_mode
+    entity_id: ${climate_entity}
+    attribute: preset_mode
+    on_value:
+      - lvgl.widget.update:
+          id: preset_home
+          state:
+            checked: !lambda return x == "home";
+      - lvgl.widget.update:
+          id: preset_away
+          state:
+            checked: !lambda return x == "away";
+      - lvgl.widget.update:
+          id: preset_sleep
+          state:
+            checked: !lambda return x == "sleep";
+
+script:
+  # Shows the target temperature held in target_half.
+  - id: show_target
+    then:
+      - lvgl.label.update:
+          id: target_label
+          text:
+            format: "%.1f°"
+            args: ["id(target_half) / 2.0f"]
+
+  # Sends the target temperature to Home Assistant once the user has stopped changing it.
+  - id: send_target
+    mode: restart
+    then:
+      - delay: 1s
+      - homeassistant.action:
+          action: climate.set_temperature
+          data:
+            entity_id: ${climate_entity}
+            temperature: !lambda return id(target_half) / 2.0f;
+
+  # Status text and ring colour: orange while heating, blue when idle, grey when off or unknown.
+  - id: show_status
+    then:
+      - if:
+          condition:
+            lambda: return id(ha_hvac_mode).state == "off";
+          then:
+            - lvgl.label.update:
+                id: status_label
+                text: "Off"
+            - lvgl.arc.update:
+                id: target_arc
+                indicator:
+                  arc_color: 0x5A5A5A
+                knob:
+                  bg_color: 0x8A8A8A
+            - lvgl.widget.update:
+                id: power_button
+                state:
+                  checked: false
+          else:
+            - lvgl.widget.update:
+                id: power_button
+                state:
+                  checked: true
+            - if:
+                condition:
+                  lambda: return id(ha_hvac_action).state == "heating";
+                then:
+                  - lvgl.label.update:
+                      id: status_label
+                      text: "Heating"
+                  - lvgl.arc.update:
+                      id: target_arc
+                      indicator:
+                        arc_color: 0xFF7A1A
+                      knob:
+                        bg_color: 0xFFFFFF
+                else:
+                  - lvgl.label.update:
+                      id: status_label
+                      text: "Idle"
+                  - lvgl.arc.update:
+                      id: target_arc
+                      indicator:
+                        arc_color: 0x3A8DDE
+                      knob:
+                        bg_color: 0xFFFFFF
+
+  # Moves the target by a number of half degrees, within the thermostat's 10 to 22 °C range.
+  - id: step_target
+    parameters:
+      steps: int
+    then:
+      - globals.set:
+          id: target_half
+          value: !lambda return std::clamp(id(target_half) + steps, 20, 44);
+      - lvgl.arc.update:
+          id: target_arc
+          value: !lambda return id(target_half);
+      - script.execute: show_target
+      - script.execute: send_target
 
 lvgl:
   displays: round_display
   touchscreens: round_touch
+  bg_color: 0x000000
+  text_color: 0xFFFFFF
+  on_idle:
+    - timeout: 60s
+      then:
+        - globals.set:
+            id: screen_dimmed
+            value: "true"
+        - light.turn_on:
+            id: backlight
+            brightness: 15%
+  style_definitions:
+    - id: round_button
+      radius: 32
+      bg_color: 0x262626
+      text_color: 0xFFFFFF
+      text_font: montserrat_28
+      shadow_width: 0
+      border_width: 0
+    - id: preset_button
+      radius: 19
+      bg_color: 0x262626
+      text_color: 0xBBBBBB
+      text_font: montserrat_16
+      shadow_width: 0
+      border_width: 0
   widgets:
-    - label:
-        align: TOP_MID
-        y: 70
-        text: ${friendly_name}
     - arc:
-        id: brightness_arc
+        id: target_arc
         align: CENTER
-        width: 360
-        height: 360
-        min_value: 10
-        max_value: 100
-        value: 100
+        width: 440
+        height: 440
+        # 10 to 22 °C in half degrees.
+        min_value: 20
+        max_value: 44
+        value: 40
+        adjustable: true
+        start_angle: 135
+        end_angle: 45
+        arc_width: 26
+        arc_color: 0x262626
+        arc_rounded: true
+        bg_opa: TRANSP
+        border_width: 0
+        indicator:
+          arc_width: 26
+          arc_color: 0x3A8DDE
+          arc_rounded: true
+        knob:
+          bg_color: 0xFFFFFF
+          pad_all: 4
         on_value:
-          - light.turn_on:
-              id: backlight
-              brightness: !lambda return x / 100.0f;
-          - lvgl.label.update:
-              id: brightness_label
-              text:
-                format: "%d%%"
-                args: ["(int) x"]
+          - globals.set:
+              id: target_half
+              value: !lambda return (int) x;
+          - script.execute: show_target
+        on_release:
+          - script.execute: send_target
     - label:
-        id: brightness_label
+        id: status_label
         align: CENTER
-        text: "100%"
+        y: -110
+        text_font: montserrat_22
+        text_color: 0xBBBBBB
+        text: "Connecting"
+    - label:
+        id: target_label
+        align: CENTER
+        y: -30
+        text_font: font_target
+        text: "--"
+    - label:
+        id: current_label
+        align: CENTER
+        y: 45
+        text_font: montserrat_20
+        text_color: 0xBBBBBB
+        text: "Now --"
+    - button:
+        id: minus_button
+        align: CENTER
+        x: -80
+        y: 110
+        width: 64
+        height: 64
+        styles: round_button
+        on_click:
+          - script.execute:
+              id: step_target
+              steps: -1
+        widgets:
+          - label:
+              align: CENTER
+              text: ""
+    - button:
+        id: power_button
+        align: CENTER
+        y: 110
+        width: 64
+        height: 64
+        styles: round_button
+        checked:
+          bg_color: 0xFF7A1A
+        on_click:
+          - homeassistant.action:
+              action: climate.set_hvac_mode
+              data:
+                entity_id: ${climate_entity}
+                hvac_mode: !lambda 'return id(ha_hvac_mode).state == "off" ? "heat" : "off";'
+        widgets:
+          - label:
+              align: CENTER
+              text: ""
+    - button:
+        id: plus_button
+        align: CENTER
+        x: 80
+        y: 110
+        width: 64
+        height: 64
+        styles: round_button
+        on_click:
+          - script.execute:
+              id: step_target
+              steps: 1
+        widgets:
+          - label:
+              align: CENTER
+              text: ""
+    - button:
+        id: preset_home
+        align: CENTER
+        x: -82
+        y: 176
+        width: 76
+        height: 38
+        styles: preset_button
+        checked:
+          bg_color: 0x3A8DDE
+          text_color: 0xFFFFFF
+        on_click:
+          - homeassistant.action:
+              action: climate.set_preset_mode
+              data:
+                entity_id: ${climate_entity}
+                preset_mode: home
+        widgets:
+          - label:
+              align: CENTER
+              text: "Home"
+    - button:
+        id: preset_away
+        align: CENTER
+        y: 176
+        width: 76
+        height: 38
+        styles: preset_button
+        checked:
+          bg_color: 0x3A8DDE
+          text_color: 0xFFFFFF
+        on_click:
+          - homeassistant.action:
+              action: climate.set_preset_mode
+              data:
+                entity_id: ${climate_entity}
+                preset_mode: away
+        widgets:
+          - label:
+              align: CENTER
+              text: "Away"
+    - button:
+        id: preset_sleep
+        align: CENTER
+        x: 82
+        y: 176
+        width: 76
+        height: 38
+        styles: preset_button
+        checked:
+          bg_color: 0x3A8DDE
+          text_color: 0xFFFFFF
+        on_click:
+          - homeassistant.action:
+              action: climate.set_preset_mode
+              data:
+                entity_id: ${climate_entity}
+                preset_mode: sleep
+        widgets:
+          - label:
+              align: CENTER
+              text: "Sleep"
